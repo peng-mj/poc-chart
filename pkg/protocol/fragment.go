@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// FragmentHeader is the header for fragmented messages (12 bytes).
+// FragmentHeader is the header for fragmented messages (13 bytes).
 type FragmentHeader struct {
 	Flag   MessageFlag
 	Index  uint16 // Fragment index (0-based)
@@ -21,7 +21,7 @@ type FragmentHeader struct {
 
 // MarshalBinary encodes the fragment header to bytes.
 func (h *FragmentHeader) MarshalBinary() ([]byte, error) {
-	buf := make([]byte, 12)
+	buf := make([]byte, 13)
 	buf[0] = byte(h.Flag)
 	binary.BigEndian.PutUint16(buf[1:3], h.Index)
 	binary.BigEndian.PutUint16(buf[3:5], h.Total)
@@ -32,7 +32,7 @@ func (h *FragmentHeader) MarshalBinary() ([]byte, error) {
 
 // UnmarshalBinary decodes bytes to a fragment header.
 func (h *FragmentHeader) UnmarshalBinary(data []byte) error {
-	if len(data) < 12 {
+	if len(data) < 13 {
 		return errors.New("invalid fragment header size")
 	}
 	h.Flag = MessageFlag(data[0])
@@ -132,16 +132,16 @@ func (fb *FragmentBuffer) ReceiveFragmented(transport Transport) (MessageFlag, [
 			return 0, nil, err
 		}
 
-		if len(packet) < 12 {
+		if len(packet) < 13 {
 			return 0, nil, errors.New("packet too short for fragment header")
 		}
 
 		header := &FragmentHeader{}
-		if err := header.UnmarshalBinary(packet[:12]); err != nil {
+		if err := header.UnmarshalBinary(packet[:13]); err != nil {
 			return 0, nil, err
 		}
 
-		payload := packet[12:]
+		payload := packet[13:]
 
 		// Single fragment message
 		if header.Total == 1 {

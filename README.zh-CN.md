@@ -436,12 +436,40 @@ go build -o bin/pqc-chart-tool ./cmd/pqc-chart-tool
 - 用于与对等方带外交换
 
 ### 3. 连接到对等方
+
+#### 中继模式（通过 WebSocket 中继服务器）
 ```bash
-./bin/pqc-chart-tool connect <relay-url> <peer-id-hash>
+./bin/pqc-chart-tool connect ws://relay-server:8080 <peer-id-hash>
 ```
-- 通过中继服务器发起连接
+
+#### 直连模式（点对点）
+```bash
+# 启动服务器模式（需要提供期望连接的对端 ID Hash）
+./bin/pqc-chart-tool server <peer-id-hash> [端口]  # 默认端口：18080
+
+# 从另一个终端连接
+./bin/pqc-chart-tool connect <IP> <peer-id-hash>              # 使用默认端口 18080
+./bin/pqc-chart-tool connect <IP>:<端口> <peer-id-hash>       # 使用自定义端口
+```
+
+**示例：**
+```bash
+# 终端 1 - 启动服务器（提供期望连接的对端 ID Hash）
+./bin/pqc-chart-tool server d4e5f6a1b2c3...
+
+# 终端 2 - 连接到服务器（提供服务器的 ID Hash）
+./bin/pqc-chart-tool connect 127.0.0.1 a1b2c3...
+```
+
+- 通过中继服务器或直接 TCP 连接发起连接
 - 执行完整握手和身份验证流程
 - 建立加密通信通道
+
+### 4. 帮助
+```bash
+./bin/pqc-chart-tool help
+```
+显示详细的使用信息和示例。
 
 ## 开发说明
 
@@ -466,8 +494,26 @@ pqc-chart-tool/
 │   └── transport/           # 传输层
 │       └── client.go        # WebSocket 客户端
 ├── Makefile
-└── README.md
+├── README.md
+└── DIRECT_CONNECTION.md
 ```
+
+### 连接模式
+
+本工具支持两种连接模式：
+
+#### 1. 中继模式
+- 使用 WebSocket 中继服务器建立连接
+- 适合 NAT 穿透和防火墙环境
+- 需要部署中继服务器
+
+#### 2. 直连模式（新增）
+- 直接点对点 TCP 连接
+- 无需中继服务器
+- 默认端口：18080（可配置）
+- 适合局域网环境和测试
+
+详见 [直连模式测试指南](DIRECT_CONNECTION.md) 获取详细使用说明。
 
 ### 实现状态
 - ✅ ML-KEM-768：使用 Go 标准库 `crypto/mlkem`

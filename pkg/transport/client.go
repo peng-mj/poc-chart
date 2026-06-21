@@ -71,6 +71,17 @@ func (ws *WebSocketConn) Close() error {
 	return err
 }
 
+// RemoteAddr returns the remote address.
+func (ws *WebSocketConn) RemoteAddr() string {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+
+	if ws.conn != nil {
+		return ws.conn.RemoteAddr().String()
+	}
+	return ""
+}
+
 // IsClosed returns whether the connection is closed.
 func (ws *WebSocketConn) IsClosed() bool {
 	ws.mu.Lock()

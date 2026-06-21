@@ -436,12 +436,40 @@ go build -o bin/pqc-chart-tool ./cmd/pqc-chart-tool
 - Used for out-of-band exchange with peer
 
 ### 3. Connect to Peer
+
+#### Relay Mode (via WebSocket relay server)
 ```bash
-./bin/pqc-chart-tool connect <relay-url> <peer-id-hash>
+./bin/pqc-chart-tool connect ws://relay-server:8080 <peer-id-hash>
 ```
-- Initiate connection via relay server
-- Execute complete handshake and identity verification process
-- Establish encrypted communication channel
+
+#### Direct Mode (peer-to-peer)
+```bash
+# Start server mode (requires the expected peer's ID hash)
+./bin/pqc-chart-tool server <peer-id-hash> [port]  # Default port: 18080
+
+# Connect from another terminal
+./bin/pqc-chart-tool connect <ip> <peer-id-hash>              # Use default port 18080
+./bin/pqc-chart-tool connect <ip>:<port> <peer-id-hash>       # Use custom port
+```
+
+**Example:**
+```bash
+# Terminal 1 - Start server (with expected peer's ID hash)
+./bin/pqc-chart-tool server d4e5f6a1b2c3...
+
+# Terminal 2 - Connect to server (with server's ID hash)
+./bin/pqc-chart-tool connect 127.0.0.1 a1b2c3...
+```
+
+- Initiates connection via relay server or direct TCP connection
+- Executes complete handshake and identity verification process
+- Establishes encrypted communication channel
+
+### 4. Help
+```bash
+./bin/pqc-chart-tool help
+```
+Display detailed usage information and examples.
 
 ## Development Notes
 
@@ -466,8 +494,26 @@ pqc-chart-tool/
 │   └── transport/           # Transport layer
 │       └── client.go        # WebSocket client
 ├── Makefile
-└── README.md
+├── README.md
+└── DIRECT_CONNECTION.md
 ```
+
+### Connection Modes
+
+The tool supports two connection modes:
+
+#### 1. Relay Mode
+- Uses WebSocket relay server for connection establishment
+- Suitable for NAT traversal and firewall environments
+- Requires relay server deployment
+
+#### 2. Direct Mode (NEW)
+- Direct peer-to-peer connection via TCP
+- No relay server required
+- Default port: 18080 (configurable)
+- Ideal for LAN environments and testing
+
+See [DIRECT_CONNECTION.md](DIRECT_CONNECTION.md) for detailed direct mode usage guide.
 
 ### Implementation Status
 - ✅ ML-KEM-768: Using Go standard library `crypto/mlkem`
