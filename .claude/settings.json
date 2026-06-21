@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go get *)",
+      "Bash(./bin/pqc-client help *)",
+      "Bash(find /home/mj/.local/go/src/crypto -name \"*.go\" -path \"*/mldsa/*.go\" 2>/dev/null | head -5)",
+      "Read(//home/mj/.local/go/src/crypto/**)"
+    ]
+  }
+}
