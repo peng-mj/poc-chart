@@ -6,18 +6,32 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/mj/pqc-chart-tool/pkg/client"
+	"golang.org/x/term"
 )
 
 // ReadPassword reads a password from stdin.
 func ReadPassword(prompt string) string {
 	fmt.Print(prompt)
+	
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		password, err := term.ReadPassword(int(syscall.Stdin))
+		fmt.Println()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading password: %v\n", err)
+			os.Exit(1)
+		}
+		return string(password)
+	}
+	
 	reader := bufio.NewReader(os.Stdin)
 	password, err := reader.ReadString('\n')
 	if err != nil {
-		panic(fmt.Sprintf("failed to read password: %v", err))
+		fmt.Fprintf(os.Stderr, "Error reading password: %v\n", err)
+		os.Exit(1)
 	}
 	return strings.TrimSpace(password)
 }

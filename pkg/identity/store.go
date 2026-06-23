@@ -8,6 +8,40 @@ import (
 	"github.com/mj/pqc-chart-tool/pkg/crypto"
 )
 
+const ConfigDirName = ".pqc-client"
+
+// GetStorePath returns the appropriate store path following the priority:
+// 1. Current directory's config (if exists)
+// 2. User home directory's config (if exists)
+// 3. Current directory's config (for new storage)
+func GetStorePath() (string, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	
+	currentDirConfig := filepath.Join(wd, ConfigDirName)
+	homeDirConfig := filepath.Join(homeDir, ConfigDirName)
+	
+	// Check if current directory has config
+	if _, err := os.Stat(currentDirConfig); err == nil {
+		return currentDirConfig, nil
+	}
+	
+	// Check if home directory has config
+	if _, err := os.Stat(homeDirConfig); err == nil {
+		return homeDirConfig, nil
+	}
+	
+	// Default to current directory for new storage
+	return currentDirConfig, nil
+}
+
 // KeyStore manages persistent key storage with encrypted private keys.
 type KeyStore struct {
 	storePath string

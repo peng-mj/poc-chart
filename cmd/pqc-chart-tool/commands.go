@@ -19,12 +19,10 @@ import (
 
 // autoGenerateIdentity generates a new ML-DSA identity keypair if one doesn't exist.
 func autoGenerateIdentity() (*crypto.MLDSAKeyPair, *identity.KeyStore) {
-	homeDir, err := os.UserHomeDir()
+	storePath, err := identity.GetStorePath()
 	if err != nil {
-		logging.Fatal("failed to get home directory", "error", err)
+		logging.Fatal("failed to get store path", "error", err)
 	}
-
-	storePath := fmt.Sprintf("%s/.pqc-client", homeDir)
 
 	store, err := identity.NewKeyStore(storePath, nil)
 	if err != nil {
@@ -64,12 +62,11 @@ func autoGenerateIdentity() (*crypto.MLDSAKeyPair, *identity.KeyStore) {
 
 // loadIdentity loads the existing identity or auto-generates one.
 func loadIdentity() (*crypto.MLDSAKeyPair, *identity.KeyStore, []byte) {
-	homeDir, err := os.UserHomeDir()
+	storePath, err := identity.GetStorePath()
 	if err != nil {
-		logging.Fatal("failed to get home directory", "error", err)
+		logging.Fatal("failed to get store path", "error", err)
 	}
 
-	storePath := fmt.Sprintf("%s/.pqc-client", homeDir)
 	store, err := identity.NewKeyStore(storePath, nil)
 	if err != nil {
 		logging.Fatal("failed to open keystore", "error", err)
@@ -115,12 +112,10 @@ func generateIdentity() {
 		logging.Fatal("failed to generate keypair", "error", err)
 	}
 
-	homeDir, err := os.UserHomeDir()
+	storePath, err := identity.GetStorePath()
 	if err != nil {
-		logging.Fatal("failed to get home directory", "error", err)
+		logging.Fatal("failed to get store path", "error", err)
 	}
-
-	storePath := fmt.Sprintf("%s/.pqc-client", homeDir)
 	masterPassword := interactive.ReadPassword("Enter master password for key storage: ")
 
 	store, err := identity.NewKeyStore(storePath, []byte(masterPassword))
@@ -144,12 +139,10 @@ func generateIdentity() {
 
 // showIdentity displays the user's ID hash.
 func showIdentity() {
-	homeDir, err := os.UserHomeDir()
+	storePath, err := identity.GetStorePath()
 	if err != nil {
-		logging.Fatal("failed to get home directory", "error", err)
+		logging.Fatal("failed to get store path", "error", err)
 	}
-
-	storePath := fmt.Sprintf("%s/.pqc-client", homeDir)
 	masterPassword := interactive.ReadPassword("Enter master password: ")
 
 	store, err := identity.NewKeyStore(storePath, []byte(masterPassword))
