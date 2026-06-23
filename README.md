@@ -420,56 +420,183 @@ go build -o bin/pqc-chart-tool ./cmd/pqc-chart-tool
 
 ## Usage
 
-### 1. Generate Identity
-```bash
-./bin/pqc-chart-tool generate
-```
-- Generate Ed25519 persistent key pair
-- Calculate and display ID_Hash (32-byte hexadecimal string)
-- Private key stored encrypted, public key stored in cleartext
+### Operation Modes
 
-### 2. View ID Hash
-```bash
-./bin/pqc-chart-tool show-id
-```
-- Display the ID_Hash of current identity
-- Used for out-of-band exchange with peer
+The tool supports automatic mode detection based on provided parameters:
 
-### 3. Connect to Peer
+1. **Server Mode** (default): Starts server mode for incoming connections
+2. **Client Mode**: Connects to a peer when `-c` and `-p` are specified
+3. **Generate Mode**: Generates a new identity keypair with `-g`
+4. **Show ID Mode**: Displays your ID hash with `-i`
 
-#### Relay Mode (via WebSocket relay server)
+### Detailed Usage Examples
+
+#### 1. Server Mode (No Parameters)
+Start server mode that accepts any incoming connection:
+
 ```bash
-./bin/pqc-chart-tool connect ws://relay-server:8080 <peer-id-hash>
+pqc-client
 ```
 
-#### Direct Mode (peer-to-peer)
-```bash
-# Start server mode (requires the expected peer's ID hash)
-./bin/pqc-chart-tool server <peer-id-hash> [port]  # Default port: 18080
+This will:
+- Auto-generate identity if none exists
+- Listen on port 18080 (default)
+- Accept connections from any peer
+- Display your ID hash for sharing
 
-# Connect from another terminal
-./bin/pqc-chart-tool connect <ip> <peer-id-hash>              # Use default port 18080
-./bin/pqc-chart-tool connect <ip>:<port> <peer-id-hash>       # Use custom port
+#### 2. Server Mode (Specific Peer)
+Start server mode that only accepts connections from a specific peer:
+
+```bash
+pqc-client -p <peer-id-hash>
 ```
 
-**Example:**
+Example:
 ```bash
-# Terminal 1 - Start server (with expected peer's ID hash)
-./bin/pqc-chart-tool server d4e5f6a1b2c3...
-
-# Terminal 2 - Connect to server (with server's ID hash)
-./bin/pqc-chart-tool connect 127.0.0.1 a1b2c3...
+pqc-client -p d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3
 ```
 
-- Initiates connection via relay server or direct TCP connection
-- Executes complete handshake and identity verification process
-- Establishes encrypted communication channel
+#### 3. Server Mode (Custom Port)
+Start server mode on a custom port:
 
-### 4. Help
 ```bash
-./bin/pqc-chart-tool help
+pqc-client --port 19090
 ```
-Display detailed usage information and examples.
+
+Or with specific peer:
+```bash
+pqc-client -p <peer-id-hash> --port 19090
+```
+
+#### 4. Client Mode (Interactive Chat)
+Connect to a peer for interactive chat:
+
+```bash
+pqc-client -c <target> -p <peer-id-hash>
+```
+
+Where `<target>` can be:
+- Direct connection: `192.168.1.100` or `192.168.1.100:18080`
+- Relay connection: `ws://relay-server:8080`
+
+Examples:
+```bash
+# Direct connection (uses default port 18080)
+pqc-client -c 192.168.1.100 -p a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3
+
+# Direct connection with custom port
+pqc-client -c 192.168.1.100:19090 -p a1b2c3...
+
+# Relay connection
+pqc-client -c ws://relay.example.com:8080 -p a1b2c3...
+```
+
+#### 5. Client Mode (Single Message)
+Send a single message and exit:
+
+```bash
+pqc-client -c <target> -p <peer-id-hash> -m "Hello World"
+```
+
+This will:
+- Connect to the peer
+- Send the specified message
+- Wait for and display the response
+- Exit after receiving the response
+
+#### 6. Generate Identity
+Generate a new ML-DSA-65 keypair:
+
+```bash
+pqc-client -g
+```
+
+This will:
+- Generate a new Ed25519 key pair
+- Calculate and display your ID hash (32-byte hex string)
+- Prompt for a master password to encrypt the private key
+- Store keys in `~/.pqc-client/` directory
+
+#### 7. Show ID Hash
+Display your current ID hash:
+
+```bash
+pqc-client -i
+```
+
+This will:
+- Prompt for your master password
+- Decrypt and load your identity
+- Display your ID hash for sharing with peers
+
+#### 8. Accept Any Peer (Server Mode)
+Start server mode that accepts connections from any peer:
+
+```bash
+pqc-client --accept
+```
+
+Or with custom port:
+```bash
+pqc-client --accept --port 19090
+```
+
+### Complete Workflow Example
+
+**Terminal 1 - Server:**
+```bash
+# First time: generate identity
+pqc-client -g
+# Output: Your ID Hash: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3
+
+# Start server (now auto-generates if needed)
+pqc-client
+# Output: Server listening on 0.0.0.0:18080
+#         Your ID Hash: a1b2c3...
+#         Waiting for incoming connections...
+```
+
+**Terminal 2 - Client:**
+```bash
+# First time: generate identity
+pqc-client -g
+# Output: Your ID Hash: d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3
+
+# Connect to server (interactive chat)
+pqc-client -c 127.0.0.1 -p a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3
+
+# Or send a single message
+pqc-client -c 127.0.0.1 -p a1b2c3... -m "Hello from client!"
+# Output: Response: Hello from server!
+```
+
+### Connection Modes
+
+The tool supports two connection modes:
+
+#### Relay Mode
+- Uses WebSocket relay server for connection establishment
+- Suitable for NAT traversal and firewall environments
+- Requires relay server deployment
+
+#### Direct Mode
+- Direct peer-to-peer connection via TCP
+- No relay server required
+- Default port: 18080 (configurable with `-P`)
+- Ideal for LAN environments and testing
+
+### Command Line Options
+
+| Option | Short | Description | Default |
+|--------|-------|-------------|---------|
+| `--generate` | `-g` | Generate new identity keypair | - |
+| `--show-id` | `-i` | Display your ID hash | - |
+| `--connect` | `-c` | Connect to peer (client mode) | - |
+| `--peer` | `-p` | Peer ID hash or server address | - |
+| `--message` | `-m` | Send single message (client mode) | - |
+| `--port` | `-P` | Listening port (server mode) | 18080 |
+| `--accept` | `-a` | Accept any peer (server mode) | false |
+| `--help` | `-h` | Show help message | - |
 
 ## Development Notes
 

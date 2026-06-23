@@ -47,6 +47,7 @@ func (h *FragmentHeader) UnmarshalBinary(data []byte) error {
 type Transport interface {
 	Send(data []byte) error
 	Recv() ([]byte, error)
+	Close() error
 }
 
 // SendFragmented sends a message, fragmenting if necessary.

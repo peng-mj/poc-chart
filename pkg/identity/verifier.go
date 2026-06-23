@@ -75,10 +75,12 @@ func (e *IdentityExchange) HandlePeerIdentity(encryptedPub []byte) ([]byte, erro
 		return nil, err
 	}
 
-	// Verify the hash matches the expected peer ID hash
-	computedHash := ComputeIDHash(pubBytes)
-	if subtle.ConstantTimeCompare(computedHash, e.peerIDHash) != 1 {
-		return nil, errors.New("peer ID hash mismatch")
+	// Verify the hash matches the expected peer ID hash (if specified)
+	if e.peerIDHash != nil {
+		computedHash := ComputeIDHash(pubBytes)
+		if subtle.ConstantTimeCompare(computedHash, e.peerIDHash) != 1 {
+			return nil, errors.New("peer ID hash mismatch")
+		}
 	}
 
 	e.peerDSAPubkey = pubBytes

@@ -2,15 +2,12 @@
 package transport
 
 import (
-	"crypto/tls"
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
-	"net/http"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 // DefaultPort is the default port for direct connections.
@@ -19,19 +16,20 @@ const DefaultPort = 18080
 // DirectServer is a TCP server for direct peer connections.
 type DirectServer struct {
 	listener  net.Listener
-	upgrader  websocket.Upgrader
-	OnConnect func(*websocket.Conn)
+	OnConnect func(net.Conn)
+}
+
+// Addr returns the server's listening address
+func (s *DirectServer) Addr() string {
+	if s.listener != nil {
+		return s.listener.Addr().String()
+	}
+	return ""
 }
 
 // NewDirectServer creates a new direct server.
 func NewDirectServer() *DirectServer {
-	return &DirectServer{
-		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				return true
-			},
-		},
-	}
+	return &DirectServer{}
 }
 
 // Start starts the server on the specified address.
@@ -42,29 +40,7 @@ func (s *DirectServer) Start(addr string) error {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 
-	log.Printf("Direct server listening on %s", addr)
-
-	go s.acceptConnections()
-	return nil
-}
-
-// StartTLS starts the server with TLS.
-func (s *DirectServer) StartTLS(addr string, certFile, keyFile string) error {
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return fmt.Errorf("failed to load TLS key pair: %w", err)
-	}
-
-	config := &tls.Config{Certificates: []tls.Certificate{cert}}
-
-	var ln net.Listener
-	ln, err = tls.Listen("tcp", addr, config)
-	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", addr, err)
-	}
-
-	s.listener = ln
-	log.Printf("Direct TLS server listening on %s", addr)
+	slog.Info("direct server listening", "addr", addr)
 
 	go s.acceptConnections()
 	return nil
@@ -72,32 +48,23 @@ func (s *DirectServer) StartTLS(addr string, certFile, keyFile string) error {
 
 // acceptConnections accepts incoming connections.
 func (s *DirectServer) acceptConnections() {
-	httpServer := &http.Server{
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			s.handleWebSocket(w, r)
-		}),
-	}
+	for {
+		conn, err := s.listener.Accept()
+		if err != nil {
+			if !errors.Is(err, net.ErrClosed) {
+				slog.Error("accept error", "error", err)
+			}
+			return
+		}
 
-	if err := httpServer.Serve(s.listener); err != nil && err != http.ErrServerClosed {
-		log.Printf("Server error: %v", err)
-	}
-}
+		remoteAddr := conn.RemoteAddr().String()
+		slog.Info("peer connected", "remote_addr", remoteAddr)
 
-// handleWebSocket handles WebSocket upgrade.
-func (s *DirectServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	wsConn, err := s.upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("WebSocket upgrade failed: %v", err)
-		return
-	}
-
-	remoteAddr := wsConn.RemoteAddr().String()
-	log.Printf("Peer connected from %s", remoteAddr)
-
-	if s.OnConnect != nil {
-		s.OnConnect(wsConn)
-	} else {
-		wsConn.Close()
+		if s.OnConnect != nil {
+			s.OnConnect(conn)
+		} else {
+			conn.Close()
+		}
 	}
 }
 
@@ -111,15 +78,15 @@ func (s *DirectServer) Stop() error {
 
 // DirectConn is a direct connection transport.
 type DirectConn struct {
-	wsConn *websocket.Conn
+	conn   net.Conn
 	mu     sync.Mutex
 	closed bool
 }
 
 // NewDirectConn creates a new direct connection.
-func NewDirectConn(wsConn *websocket.Conn) *DirectConn {
+func NewDirectConn(conn net.Conn) *DirectConn {
 	return &DirectConn{
-		wsConn: wsConn,
+		conn: conn,
 	}
 }
 
@@ -128,11 +95,12 @@ func (dc *DirectConn) Send(data []byte) error {
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
 
-	if dc.closed || dc.wsConn == nil {
-		return fmt.Errorf("connection closed")
+	if dc.closed || dc.conn == nil {
+		return errors.New("connection closed")
 	}
 
-	return dc.wsConn.WriteMessage(websocket.BinaryMessage, data)
+	_, err := dc.conn.Write(data)
+	return err
 }
 
 // Recv receives a message from the connection.
@@ -140,22 +108,19 @@ func (dc *DirectConn) Recv() ([]byte, error) {
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
 
-	if dc.closed || dc.wsConn == nil {
-		return nil, fmt.Errorf("connection closed")
+	if dc.closed || dc.conn == nil {
+		return nil, errors.New("connection closed")
 	}
 
-	dc.wsConn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+	dc.conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 
-	msgType, data, err := dc.wsConn.ReadMessage()
+	buf := make([]byte, 8192)
+	n, err := dc.conn.Read(buf)
 	if err != nil {
 		return nil, err
 	}
 
-	if msgType != websocket.BinaryMessage {
-		return nil, fmt.Errorf("unexpected message type: %d", msgType)
-	}
-
-	return data, nil
+	return buf[:n], nil
 }
 
 // Close closes the connection.
@@ -168,8 +133,8 @@ func (dc *DirectConn) Close() error {
 	}
 
 	dc.closed = true
-	if dc.wsConn != nil {
-		return dc.wsConn.Close()
+	if dc.conn != nil {
+		return dc.conn.Close()
 	}
 	return nil
 }
@@ -186,8 +151,8 @@ func (dc *DirectConn) RemoteAddr() string {
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
 
-	if dc.wsConn != nil {
-		return dc.wsConn.RemoteAddr().String()
+	if dc.conn != nil && !dc.closed {
+		return dc.conn.RemoteAddr().String()
 	}
 	return ""
 }
