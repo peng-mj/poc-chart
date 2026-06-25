@@ -38,6 +38,7 @@ type IdentityExchange struct {
 	myDSAKeypair   *crypto.MLDSAKeyPair
 	peerIDHash     []byte
 	peerDSAPubkey  []byte
+	challengeNonce []byte // plaintext nonce we issued (for VerifyResponse)
 	isVerified     bool
 	mu             sync.Mutex
 }
@@ -62,7 +63,7 @@ func (e *IdentityExchange) SendIdentity(transport protocol.Transport) error {
 	}
 
 	msg := &protocol.IdentityMsg{PublicKeyEncrypted: encrypted}
-	return transport.Send(msg.Serialize())
+	return protocol.SendFragmented(transport, msg.Serialize(), protocol.MsgIdentityMessage, 1400)
 }
 
 // HandlePeerIdentity handles the peer's public key and returns a challenge.
@@ -90,6 +91,7 @@ func (e *IdentityExchange) HandlePeerIdentity(encryptedPub []byte) ([]byte, erro
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
+	e.challengeNonce = nonce
 
 	encrypted, err := crypto.AESGCMEncrypt(e.sessionKey, nonce)
 	if err != nil {
@@ -127,7 +129,8 @@ func (e *IdentityExchange) HandleChallenge(encryptedNonce []byte, channelBinding
 }
 
 // VerifyResponse verifies the signature response from the peer.
-func (e *IdentityExchange) VerifyResponse(encryptedSig []byte, expectedNonce []byte, channelBinding []byte, sessionID []byte) (bool, error) {
+// It uses the challenge nonce stored from HandlePeerIdentity.
+func (e *IdentityExchange) VerifyResponse(encryptedSig []byte, channelBinding []byte, sessionID []byte) (bool, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -136,8 +139,8 @@ func (e *IdentityExchange) VerifyResponse(encryptedSig []byte, expectedNonce []b
 		return false, err
 	}
 
-	// Reconstruct the signed message
-	message := append(expectedNonce, channelBinding...)
+	// Reconstruct the signed message using the plaintext nonce
+	message := append(e.challengeNonce, channelBinding...)
 	message = append(message, sessionID...)
 
 	valid, err := crypto.MLDSAVerify(e.peerDSAPubkey, message, sig)

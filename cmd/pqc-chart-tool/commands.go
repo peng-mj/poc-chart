@@ -3,17 +3,17 @@ package main
 import (
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"os/signal"
-	"syscall"
 	"strings"
+	"syscall"
 
 	"github.com/mj/pqc-chart-tool/internal/logging"
 	"github.com/mj/pqc-chart-tool/pkg/client"
 	"github.com/mj/pqc-chart-tool/pkg/crypto"
 	"github.com/mj/pqc-chart-tool/pkg/identity"
 	"github.com/mj/pqc-chart-tool/pkg/interactive"
+	"github.com/mj/pqc-chart-tool/pkg/protocol"
 	"github.com/mj/pqc-chart-tool/pkg/transport"
 )
 
@@ -165,9 +165,20 @@ func showIdentity() {
 	fmt.Printf("Your ID Hash: %s\n", identity.FormatIDHash(idHash))
 }
 
+// normalizeWSURL ensures the target is a valid ws:// URL with a port.
+func normalizeWSURL(target string) string {
+	if !strings.Contains(target, ":") {
+		target = fmt.Sprintf("%s:%d", target, transport.DefaultWSPort)
+	}
+	if !strings.HasPrefix(target, "ws://") && !strings.HasPrefix(target, "wss://") {
+		target = fmt.Sprintf("ws://%s", target)
+	}
+	return target
+}
+
 // connectToPeer connects to a peer and starts interactive chat or sends a single message.
 func connectToPeer(target, peerIDHashStr, message string) {
-	keypair, store, _ := loadIdentity()
+	keypair, store, myIDHash := loadIdentity()
 	defer store.Close()
 	defer crypto.SecureClear(keypair.Private)
 
@@ -181,17 +192,12 @@ func connectToPeer(target, peerIDHashStr, message string) {
 		}
 	}
 
-	if !strings.Contains(target, ":") {
-		target = fmt.Sprintf("%s:%d", target, transport.DefaultPort)
-	}
-	pqcClient := client.NewPQCClientDirect(keypair, target, false)
-	fmt.Printf("Connecting to %s...\n", target)
+	wsURL := normalizeWSURL(target)
 
-	if peerIDHash == nil {
-		peerIDHash = make([]byte, 32)
-	}
+	pqcClient := client.NewPQCClient(keypair)
+	fmt.Printf("Connecting to %s...\n", wsURL)
 
-	channel, err := pqcClient.Connect(peerIDHash)
+	channel, err := pqcClient.Connect(wsURL, peerIDHash)
 	if err != nil {
 		logging.Fatal("connection failed", "error", err)
 	}
@@ -199,23 +205,20 @@ func connectToPeer(target, peerIDHashStr, message string) {
 
 	fmt.Println("Connected securely!")
 
+	myPrefix := interactive.HashPrefix8(identity.FormatIDHash(myIDHash))
+	peerPrefix := interactive.HashPrefix8(peerIDHashStr)
+
 	if message != "" {
 		if err := channel.Send([]byte(message)); err != nil {
 			logging.Fatal("failed to send message", "error", err)
 		}
-		fmt.Println("Message sent successfully")
-
-		response, err := channel.Recv()
-		if err != nil {
-			logging.Fatal("failed to receive response", "error", err)
-		}
-		fmt.Printf("Response: %s\n", string(response))
+		fmt.Println(interactive.FormatMessage(myPrefix, "o", message))
 	} else {
-		interactive.InteractiveChat(channel)
+		interactive.InteractiveChat(channel, myPrefix, peerPrefix)
 	}
 }
 
-// startServer starts the server mode for direct connections.
+// startServer starts the server mode for WebSocket connections.
 func startServer(peerIDHashStr string, port int, acceptAny bool) {
 	var peerIDHash []byte
 	var err error
@@ -226,58 +229,60 @@ func startServer(peerIDHashStr string, port int, acceptAny bool) {
 		}
 	}
 
-	keypair, store, _ := loadIdentity()
+	keypair, store, myIDHash := loadIdentity()
 	defer store.Close()
 	defer crypto.SecureClear(keypair.Private)
 
-	pqcClient := client.NewPQCClientDirect(keypair, "", acceptAny)
+	pqcClient := client.NewPQCClient(keypair)
 
-	server := transport.NewDirectServer()
+	myPrefix := interactive.HashPrefix8(identity.FormatIDHash(myIDHash))
+	peerPrefix := interactive.HashPrefix8(peerIDHashStr)
+
+	server := transport.NewWSServer()
 	addr := fmt.Sprintf("0.0.0.0:%d", port)
 
-	server.OnConnect = func(conn net.Conn) {
-		slog.Info("incoming connection", "remote_addr", conn.RemoteAddr())
-
-		tcpConn := transport.NewDirectConn(conn)
-
-		if peerIDHash == nil {
-			peerIDHash = make([]byte, 32)
+	server.HandshakeHandler = func(conn protocol.Transport) ([]byte, error) {
+		ph := peerIDHash
+		if ph == nil {
+			ph = make([]byte, 32)
 		}
+		return pqcClient.HandshakeResponder(conn, ph, acceptAny)
+	}
 
-		channel, err := pqcClient.Accept(tcpConn, peerIDHash, acceptAny)
-		if err != nil {
-			slog.Error("handshake failed", "remote_addr", conn.RemoteAddr(), "error", err)
-			conn.Close()
-			return
-		}
+	server.OnSecureChannel = func(tr protocol.Transport, sessionKey []byte) {
+		slog.Info("incoming secure connection")
+
+		channel := client.NewSecureChannel(tr, sessionKey)
 		defer channel.Close()
 
 		fmt.Println("\nPeer connected securely!")
-		interactive.InteractiveChat(channel)
+		interactive.InteractiveChat(channel, myPrefix, peerPrefix)
 	}
 
-	if err := server.Start(addr); err != nil {
-		logging.Fatal("failed to start server", "error", err)
-	}
-
-	myIDHash := identity.ComputeIDHash(keypair.Public)
 	fmt.Printf("Server listening on %s\n", addr)
 	fmt.Printf("Your ID Hash: %s\n", identity.FormatIDHash(myIDHash))
 	fmt.Println("\nWaiting for incoming connections...")
 	fmt.Println("Press Ctrl+C to stop the server")
 
-	slog.Info("server started, ready to accept connections")
-	setupSignalHandler(server)
+	slog.Info("WebSocket server started, ready to accept connections")
+
+	go func() {
+		if err := server.Start(addr); err != nil {
+			logging.Fatal("failed to start WebSocket server", "error", err)
+		}
+	}()
+
+	setupWSSignalHandler(server)
 }
 
-// setupSignalHandler handles graceful shutdown on SIGINT/SIGTERM
-func setupSignalHandler(server *transport.DirectServer) {
+// setupWSSignalHandler handles graceful shutdown on SIGINT/SIGTERM.
+func setupWSSignalHandler(server *transport.WSServer) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	<-sigChan
 	fmt.Println("\n\nShutting down server...")
-	server.Stop()
+	_ = server.Stop()
 	fmt.Println("Server stopped")
 	os.Exit(0)
 }

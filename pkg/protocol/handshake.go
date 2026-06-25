@@ -43,6 +43,7 @@ type KEMHandshake struct {
 	state          HandshakeState
 	isInitiator    bool
 	myKEMKeypair   *crypto.MLKEMKeyPair
+	myKEMPublicKey []byte // cached public key (survives keypair clearing)
 	peerPubkey     []byte
 	sharedSecrets  map[string][]byte
 	mu             sync.Mutex
@@ -67,6 +68,7 @@ func (h *KEMHandshake) Initiate() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	h.myKEMPublicKey = h.myKEMKeypair.Public()
 
 	msg := &HandshakeRequest{
 		KEMPublicKey:    h.myKEMKeypair.Public(),
@@ -92,6 +94,7 @@ func (h *KEMHandshake) HandleRequest(request []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	h.myKEMPublicKey = h.myKEMKeypair.Public()
 
 	h.peerPubkey = req.KEMPublicKey
 
@@ -214,10 +217,19 @@ func (h *KEMHandshake) State() HandshakeState {
 func (h *KEMHandshake) MyKEMPublicKey() []byte {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.myKEMKeypair != nil {
-		return h.myKEMKeypair.Public()
+	return h.myKEMPublicKey
+}
+
+// ChannelBinding returns a canonical binding of both KEM public keys
+// (initiator's key first, responder's key second). Both sides compute
+// the identical value regardless of role.
+func (h *KEMHandshake) ChannelBinding() []byte {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.isInitiator {
+		return append(h.myKEMPublicKey, h.peerPubkey...)
 	}
-	return nil
+	return append(h.peerPubkey, h.myKEMPublicKey...)
 }
 
 // PeerPubkey returns the peer's temporary KEM public key.

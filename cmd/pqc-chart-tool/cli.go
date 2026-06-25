@@ -30,7 +30,7 @@ func parseFlags() *CLIConfig {
 	fs.StringVarP(&cfg.connectTarget, "connect", "c", "", "Connection target (for client mode): ip:port")
 	fs.StringVarP(&cfg.peerIDHash, "peer", "p", "", "Peer address (ip:port for client mode) or server address (for server mode)")
 	fs.StringVarP(&cfg.message, "message", "m", "", "Send a single message and exit (client mode)")
-	fs.IntVarP(&cfg.port, "port", "P", transport.DefaultPort, "Listening port (for server mode)")
+	fs.IntVarP(&cfg.port, "port", "P", transport.DefaultWSPort, "Listening port (for server mode)")
 	fs.BoolVarP(&cfg.acceptAny, "accept", "a", false, "Accept connections from any peer (for server mode)")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {

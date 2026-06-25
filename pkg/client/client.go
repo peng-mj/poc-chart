@@ -1,9 +1,10 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"net"
+	"time"
 
 	"github.com/mj/pqc-chart-tool/pkg/crypto"
 	"github.com/mj/pqc-chart-tool/pkg/identity"
@@ -11,63 +12,98 @@ import (
 	"github.com/mj/pqc-chart-tool/pkg/transport"
 )
 
-// PQCClient represents a PQC client.
+// PQCClient represents a PQC client capable of initiating and accepting
+// handshakes over WebSocket.
 type PQCClient struct {
 	identityKeypair *crypto.MLDSAKeyPair
 	myIDHash        []byte
-	directAddr      string
 	fragmentBuffer  *protocol.FragmentBuffer
-	acceptAny       bool
 }
 
-// NewPQCClientDirect creates a new PQC client for direct TCP connections.
-func NewPQCClientDirect(identityKeypair *crypto.MLDSAKeyPair, directAddr string, acceptAny bool) *PQCClient {
+// NewPQCClient creates a new PQC client with the given identity keypair.
+func NewPQCClient(identityKeypair *crypto.MLDSAKeyPair) *PQCClient {
 	myIDHash := identity.ComputeIDHash(identityKeypair.Public)
 	return &PQCClient{
 		identityKeypair: identityKeypair,
-		directAddr:      directAddr,
 		myIDHash:        myIDHash,
-		fragmentBuffer:  protocol.NewFragmentBuffer(5 * 60 * 1000000000),
-		acceptAny:       acceptAny,
+		fragmentBuffer:  protocol.NewFragmentBuffer(5 * time.Minute),
 	}
 }
 
-// Connect initiates a TCP connection to a peer.
-func (c *PQCClient) Connect(targetIDHash []byte) (*SecureChannel, error) {
-	var conn protocol.Transport
+// dialTimeout is the maximum time to wait when dialing a WebSocket.
+const dialTimeout = 10 * time.Second
 
-	if c.directAddr != "" {
-		tcpConn, err := net.Dial("tcp", c.directAddr)
-		if err != nil {
-			return nil, fmt.Errorf("dial TCP: %w", err)
-		}
-		conn = transport.NewDirectConn(tcpConn)
-	} else {
-		return nil, errors.New("no connection address specified")
+// Connect initiates a WebSocket connection to a peer.
+//
+// The method performs two phases:
+//  1. Opens a handshake WebSocket, runs the KEM + identity-verification
+//     handshake, receives a session token, then closes the handshake WS.
+//  2. Opens a fresh message WebSocket using the session token.
+//
+// The returned SecureChannel wraps the message WebSocket transport.
+func (c *PQCClient) Connect(wsURL string, targetIDHash []byte) (*SecureChannel, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
+	defer cancel()
+
+	// ---- Phase 1: Handshake WebSocket ----
+	handshakeURL := wsURL + transport.HandshakeWSEndpoint
+	handshakeTr, err := transport.WSDial(ctx, handshakeURL)
+	if err != nil {
+		return nil, fmt.Errorf("dial handshake WS: %w", err)
 	}
 
-	channel, err := c.performHandshake(conn, targetIDHash)
+	sessionKey, err := c.runHandshakeInitiator(handshakeTr, targetIDHash)
 	if err != nil {
-		if closer, ok := conn.(interface{ Close() error }); ok {
-			closer.Close()
-		}
+		_ = handshakeTr.Close()
 		return nil, err
 	}
-	return channel, nil
-}
 
-// Accept handles an incoming TCP connection.
-func (c *PQCClient) Accept(conn protocol.Transport, targetIDHash []byte, acceptAny bool) (*SecureChannel, error) {
-	channel, err := c.performHandshakeResponder(conn, targetIDHash, acceptAny)
+	token, err := c.receiveSessionToken(handshakeTr, sessionKey)
 	if err != nil {
-		conn.Close()
+		_ = handshakeTr.Close()
 		return nil, err
 	}
-	return channel, nil
+
+	_ = handshakeTr.Close()
+
+	// ---- Phase 2: Message WebSocket ----
+	messageURL := fmt.Sprintf("%s%s?session=%s", wsURL, transport.MessageWSEndpoint, token)
+	messageTr, err := transport.WSDial(ctx, messageURL)
+	if err != nil {
+		return nil, fmt.Errorf("dial message WS: %w", err)
+	}
+
+	return NewSecureChannel(messageTr, sessionKey), nil
 }
 
-// performHandshake performs the handshake as initiator.
-func (c *PQCClient) performHandshake(conn protocol.Transport, targetIDHash []byte) (*SecureChannel, error) {
+// receiveSessionToken reads the encrypted session token from the handshake
+// transport, decrypts it with the session key, and returns the raw token.
+func (c *PQCClient) receiveSessionToken(tr protocol.Transport, sessionKey []byte) (string, error) {
+	flag, tokenData, err := c.fragmentBuffer.ReceiveFragmented(tr)
+	if err != nil {
+		return "", fmt.Errorf("receive session token: %w", err)
+	}
+	if flag != protocol.MsgSessionToken {
+		return "", fmt.Errorf("unexpected message type %d, want session token", flag)
+	}
+
+	tokenMsg, err := protocol.DeserializeSessionTokenMsg(tokenData)
+	if err != nil {
+		return "", fmt.Errorf("deserialize session token: %w", err)
+	}
+
+	tokenBytes, err := crypto.AESGCMDecrypt(sessionKey, tokenMsg.EncryptedToken)
+	if err != nil {
+		return "", fmt.Errorf("decrypt session token: %w", err)
+	}
+
+	return string(tokenBytes), nil
+}
+
+// runHandshakeInitiator performs the full handshake as the initiator
+// (KEM key exchange + bidirectional identity verification) and returns
+// the derived session key.
+func (c *PQCClient) runHandshakeInitiator(conn protocol.Transport, targetIDHash []byte) ([]byte, error) {
 	handshake := protocol.NewKEMHandshake(true)
 	request, err := handshake.Initiate()
 	if err != nil {
@@ -100,27 +136,11 @@ func (c *PQCClient) performHandshake(conn protocol.Transport, targetIDHash []byt
 		return nil, err
 	}
 
-	channelBinding := append(handshake.MyKEMPublicKey(), handshake.PeerPubkey()...)
+	channelBinding := handshake.ChannelBinding()
 	idExchange := identity.NewIdentityExchange(sessionKey, c.identityKeypair, targetIDHash)
 
+	// Phase 1: Initiator proves identity to responder
 	if err := idExchange.SendIdentity(conn); err != nil {
-		return nil, err
-	}
-
-	flag, peerIdentity, err := c.fragmentBuffer.ReceiveFragmented(conn)
-	if err != nil {
-		return nil, err
-	}
-	if flag != protocol.MsgIdentityMessage {
-		return nil, errors.New("unexpected message type")
-	}
-
-	peerChallenge, err := idExchange.HandlePeerIdentity(peerIdentity)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := protocol.SendFragmented(conn, peerChallenge, protocol.MsgChallenge, 1400); err != nil {
 		return nil, err
 	}
 
@@ -141,6 +161,29 @@ func (c *PQCClient) performHandshake(conn protocol.Transport, targetIDHash []byt
 		return nil, err
 	}
 
+	// Phase 2: Responder proves identity to initiator
+	flag, peerIdentityData, err := c.fragmentBuffer.ReceiveFragmented(conn)
+	if err != nil {
+		return nil, err
+	}
+	if flag != protocol.MsgIdentityMessage {
+		return nil, errors.New("unexpected message type")
+	}
+
+	peerIdentityMsg, err := protocol.DeserializeIdentityMsg(peerIdentityData)
+	if err != nil {
+		return nil, err
+	}
+
+	peerChallenge, err := idExchange.HandlePeerIdentity(peerIdentityMsg.PublicKeyEncrypted)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := protocol.SendFragmented(conn, peerChallenge, protocol.MsgChallenge, 1400); err != nil {
+		return nil, err
+	}
+
 	flag, peerSig, err := c.fragmentBuffer.ReceiveFragmented(conn)
 	if err != nil {
 		return nil, err
@@ -149,7 +192,7 @@ func (c *PQCClient) performHandshake(conn protocol.Transport, targetIDHash []byt
 		return nil, errors.New("unexpected message type")
 	}
 
-	verified, err := idExchange.VerifyResponse(peerSig, peerChallenge, channelBinding, sessionKey)
+	verified, err := idExchange.VerifyResponse(peerSig, channelBinding, sessionKey)
 	if err != nil {
 		return nil, err
 	}
@@ -158,11 +201,14 @@ func (c *PQCClient) performHandshake(conn protocol.Transport, targetIDHash []byt
 		return nil, errors.New("identity verification failed")
 	}
 
-	return NewSecureChannel(conn, sessionKey), nil
+	return sessionKey, nil
 }
 
-// performHandshakeResponder performs the handshake as responder.
-func (c *PQCClient) performHandshakeResponder(conn protocol.Transport, targetIDHash []byte, acceptAny bool) (*SecureChannel, error) {
+// HandshakeResponder performs the full handshake as the responder
+// (KEM key exchange + bidirectional identity verification) and returns
+// the derived session key. This is called by the server's handshake
+// handler for each incoming handshake WebSocket.
+func (c *PQCClient) HandshakeResponder(conn protocol.Transport, targetIDHash []byte, acceptAny bool) ([]byte, error) {
 	handshake := protocol.NewKEMHandshake(false)
 
 	flag, requestData, err := c.fragmentBuffer.ReceiveFragmented(conn)
@@ -199,7 +245,7 @@ func (c *PQCClient) performHandshakeResponder(conn protocol.Transport, targetIDH
 		return nil, err
 	}
 
-	channelBinding := append(handshake.MyKEMPublicKey(), handshake.PeerPubkey()...)
+	channelBinding := handshake.ChannelBinding()
 
 	var peerIDHash []byte
 	if !acceptAny {
@@ -207,7 +253,7 @@ func (c *PQCClient) performHandshakeResponder(conn protocol.Transport, targetIDH
 	}
 	idExchange := identity.NewIdentityExchange(sessionKey, c.identityKeypair, peerIDHash)
 
-	flag, peerIdentity, err := c.fragmentBuffer.ReceiveFragmented(conn)
+	flag, peerIdentityData, err := c.fragmentBuffer.ReceiveFragmented(conn)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +261,12 @@ func (c *PQCClient) performHandshakeResponder(conn protocol.Transport, targetIDH
 		return nil, errors.New("unexpected message type")
 	}
 
-	peerChallenge, err := idExchange.HandlePeerIdentity(peerIdentity)
+	peerIdentityMsg, err := protocol.DeserializeIdentityMsg(peerIdentityData)
+	if err != nil {
+		return nil, err
+	}
+
+	peerChallenge, err := idExchange.HandlePeerIdentity(peerIdentityMsg.PublicKeyEncrypted)
 	if err != nil {
 		return nil, err
 	}
@@ -232,7 +283,7 @@ func (c *PQCClient) performHandshakeResponder(conn protocol.Transport, targetIDH
 		return nil, errors.New("unexpected message type")
 	}
 
-	verified, err := idExchange.VerifyResponse(sigResponse, peerChallenge, channelBinding, sessionKey)
+	verified, err := idExchange.VerifyResponse(sigResponse, channelBinding, sessionKey)
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +313,7 @@ func (c *PQCClient) performHandshakeResponder(conn protocol.Transport, targetIDH
 		return nil, err
 	}
 
-	return NewSecureChannel(conn, sessionKey), nil
+	return sessionKey, nil
 }
 
 // IDHash returns the client's ID hash.

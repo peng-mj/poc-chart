@@ -16,6 +16,7 @@ const (
 	MsgIdentityMessage    MessageFlag = 0x10
 	MsgChallenge          MessageFlag = 0x11
 	MsgSignatureResponse  MessageFlag = 0x12
+	MsgSessionToken       MessageFlag = 0x20
 )
 
 // HandshakeRequest is the initial message sent by the initiator.
@@ -324,4 +325,47 @@ func DeserializeSignatureResponse(data []byte) (*SignatureResponse, error) {
 	sig := data[offset : offset+int(sigLen)]
 
 	return &SignatureResponse{EncryptedSignature: sig}, nil
+}
+
+// SessionTokenMsg carries the AES-GCM encrypted session token.
+// The server sends this after the handshake completes so the client
+// can open a new WebSocket for message exchange.
+// Format: | flag (1B) | enc_token_len (2B) | enc_token |
+type SessionTokenMsg struct {
+	EncryptedToken []byte
+}
+
+// Serialize encodes the SessionTokenMsg to bytes.
+func (m *SessionTokenMsg) Serialize() []byte {
+	buf := make([]byte, 0, 1+2+len(m.EncryptedToken))
+
+	buf = append(buf, byte(MsgSessionToken))
+	buf = append(buf, make([]byte, 2)...)
+	binary.BigEndian.PutUint16(buf[len(buf)-2:], uint16(len(m.EncryptedToken)))
+	buf = append(buf, m.EncryptedToken...)
+
+	return buf
+}
+
+// DeserializeSessionTokenMsg decodes bytes to a SessionTokenMsg.
+func DeserializeSessionTokenMsg(data []byte) (*SessionTokenMsg, error) {
+	if len(data) < 1+2 {
+		return nil, errors.New("data too short")
+	}
+
+	if MessageFlag(data[0]) != MsgSessionToken {
+		return nil, errors.New("invalid message flag")
+	}
+
+	offset := 1
+	tokenLen := binary.BigEndian.Uint16(data[offset : offset+2])
+	offset += 2
+
+	if len(data) < offset+int(tokenLen) {
+		return nil, errors.New("data too short for token")
+	}
+
+	token := data[offset : offset+int(tokenLen)]
+
+	return &SessionTokenMsg{EncryptedToken: token}, nil
 }
